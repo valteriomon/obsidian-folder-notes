@@ -29,8 +29,9 @@ export default class ConfirmationModal extends Modal {
                             (excludedFolder.path === folder.path?.slice(0, folder?.path.lastIndexOf('/') >= 0 ? folder.path?.lastIndexOf('/') : folder.path.length)
                                 && excludedFolder.subFolders));
 					if (excludedFolder) return;
-					if (this.app.vault.getAbstractFileByPath(folder.path + '/' + folder.name + '.md')) return;
-					await this.plugin.createFolderNote(folder.path + '/' + folder.name + '.md', true);
+					const folderNoteName = this.plugin.getFolderNoteName(folder.name);
+					if (this.app.vault.getAbstractFileByPath(folder.path + '/' + folderNoteName + '.md')) return;
+					await this.plugin.createFolderNote(folder.path + '/' + folderNoteName + '.md', true);
 				}
 			});
 		});

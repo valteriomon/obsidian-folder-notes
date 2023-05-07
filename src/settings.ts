@@ -1,4 +1,4 @@
-import { App, Platform, PluginSettingTab, Setting } from 'obsidian';
+import { App, Platform, PluginSettingTab, Setting, normalizePath, Notice } from 'obsidian';
 import FolderNotesPlugin from './main';
 import { FolderSuggest } from './suggesters/FolderSuggester';
 import ExcludedFolderSettings from './modals/exludeFolderSettings';
@@ -18,6 +18,9 @@ export interface FolderNotesSettings {
 	allowWhitespaceCollapsing: boolean;
 	underlineFolderInPath: boolean;
 	openFolderNoteOnClickInPath: boolean;
+	namingMethod: string;
+	namingMethodIndex: string;
+	namingMethodPrefix: string;
 }
 
 export const DEFAULT_SETTINGS: FolderNotesSettings = {
@@ -34,6 +37,9 @@ export const DEFAULT_SETTINGS: FolderNotesSettings = {
 	allowWhitespaceCollapsing: false,
 	underlineFolderInPath: true,
 	openFolderNoteOnClickInPath: true,
+	namingMethod: 'foldername',
+	namingMethodIndex: 'Index',
+	namingMethodPrefix: 'Index of '
 };
 export class SettingsTab extends PluginSettingTab {
 	plugin: FolderNotesPlugin;
@@ -48,6 +54,62 @@ export class SettingsTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl('h2', { text: 'Folder notes settings' });
+
+		new Setting(containerEl)
+			.setName('Folder note naming method')
+			.setDesc('Choose the naming method for the folder note file')
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('foldername', 'Same as folder name')
+					.addOption('index', 'New name')
+					.addOption('prefix', 'Folder name with prefix')
+					.setValue(this.plugin.settings.namingMethod || DEFAULT_SETTINGS.namingMethod)
+					.onChange(async (value) => {
+						this.plugin.settings.namingMethod = value;
+						await this.plugin.saveSettings();
+						this.display();
+						this.plugin.loadFileClasses(true);
+					})
+			);
+
+		if (this.plugin.settings.namingMethod == 'index') {
+			new Setting(containerEl)
+				.setName('Folder note name')
+				.addText((text) => {
+					const namingMethodIndex = this.plugin.settings.namingMethodIndex || DEFAULT_SETTINGS.namingMethodIndex;
+					return text
+						.setPlaceholder(namingMethodIndex)
+						.setValue(namingMethodIndex)
+						.onChange(async (value) => {
+							if(!this.plugin.validateFilename(value)) {
+								new Notice("File name cannot contain any of these characters: *\"\\/<>:|?");
+								return;
+							}
+							this.plugin.settings.namingMethodIndex = value;
+							await this.plugin.saveSettings();
+							this.plugin.loadFileClasses(true);
+						})
+					});
+
+			} else if (this.plugin.settings.namingMethod == 'prefix') {
+				new Setting(containerEl)
+					.setName('Prefix for the folder note')
+					.addText((text) => {
+						const namingMethodPrefix = this.plugin.settings.namingMethodPrefix || DEFAULT_SETTINGS.namingMethodPrefix;
+						return text
+							.setPlaceholder(namingMethodPrefix)
+							.setValue(namingMethodPrefix)
+							.onChange(async (value) => {
+								if(!this.plugin.validateFilename(value)) {
+									new Notice("File name cannot contain any of these characters: *\"\\/<>:|?");
+									return;
+								}
+								this.plugin.settings.namingMethodPrefix = value;
+								await this.plugin.saveSettings();
+								this.plugin.loadFileClasses(true);
+							})
+						});
+		}
 
 		new Setting(containerEl)
 			.setName('Disable folder collapsing')

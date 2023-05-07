@@ -1,4 +1,4 @@
-import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap } from 'obsidian';
+import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap, EventRef } from 'obsidian';
 import { DEFAULT_SETTINGS, ExcludedFolder, FolderNotesSettings, SettingsTab } from './settings';
 import FolderNameModal from './modals/folderName';
 import { applyTemplate } from './template';
@@ -12,6 +12,7 @@ export default class FolderNotesPlugin extends Plugin {
 	settingsTab: SettingsTab;
 	activeFolderDom: HTMLElement | null;
 	activeFileExplorer: FileExplorerWorkspaceLeaf;
+	private renamingEvent: EventRef;
 
 	async onload() {
 		console.log('loading folder notes plugin');
@@ -32,19 +33,20 @@ export default class FolderNotesPlugin extends Plugin {
 			mutations.forEach((rec) => {
 				if (rec.type === 'childList') {
 					(<Element>rec.target).querySelectorAll('div.nav-folder-title-content')
-						.forEach((element: HTMLElement) => {
-							if (element.onclick) return;
-							element.onclick = (event: MouseEvent) => this.handleFolderClick(event);
-						});
+					.forEach((element: HTMLElement) => {
+						if (element.onclick) return;
+						element.onclick = (event: MouseEvent) => this.handleFolderClick(event);
+					});
 					(<Element>rec.target).querySelectorAll('span.view-header-breadcrumb')
-						.forEach((element: HTMLElement) => {
-							const breadcrumbs = element.parentElement?.querySelectorAll('span.view-header-breadcrumb');
-							if (!breadcrumbs) return;
-							let path = '';
-							breadcrumbs.forEach((breadcrumb: HTMLElement) => {
+					.forEach((element: HTMLElement) => {
+						const breadcrumbs = element.parentElement?.querySelectorAll('span.view-header-breadcrumb');
+						if (!breadcrumbs) return;
+						let path = '';
+						breadcrumbs.forEach((breadcrumb: HTMLElement) => {
 								path += breadcrumb.innerText.trim() + '/';
 								breadcrumb.setAttribute('data-path', path.slice(0, -1));
-								if (this.app.vault.getAbstractFileByPath(path + this.getNameFromPathString(path.slice(0, -1)) + '.md')) {
+								const folderNoteName = this.getFolderNoteName(this.getNameFromPathString(path.slice(0, -1)));
+								if (this.app.vault.getAbstractFileByPath(path +  folderNoteName + '.md')) {
 									breadcrumb.classList.add('has-folder-note');
 								}
 							});
@@ -70,8 +72,10 @@ export default class FolderNotesPlugin extends Plugin {
 			// not entirely sure why
 			const parentPath = this.getPathFromString(file.path);
 			const parentName = this.getNameFromPathString(parentPath);
-			if (parentName !== file.basename) { return; }
-			this.removeCSSClassFromEL(parentPath, 'has-folder-note');
+
+			if(this.isFolderNote(file.basename, parentName)) {
+				this.removeCSSClassFromEL(parentPath, 'has-folder-note');
+			}
 		}));
 		this.registerEvent(this.app.vault.on('create', (file: TAbstractFile) => {
 			if (!this.app.workspace.layoutReady) return;
@@ -82,7 +86,8 @@ export default class FolderNotesPlugin extends Plugin {
 			const excludedFolder = this.getExcludedFolderByPath(file.path);
 			if (excludedFolder?.disableAutoCreate) return;
 
-			const path = file.path + '/' + file.name + '.md';
+			const folderNoteName = this.getFolderNoteName(file.name);
+			const path = file.path + '/' + folderNoteName + '.md';
 			const folderNote = this.app.vault.getAbstractFileByPath(path);
 			if (folderNote) return;
 			this.createFolderNote(path, true, true);
@@ -101,7 +106,7 @@ export default class FolderNotesPlugin extends Plugin {
 			if (this.activeFolderDom) this.activeFolderDom.addClass('is-active');
 		}));
 
-		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+		this.renamingEvent = this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
 			if (!this.settings.syncFolderName) {
 				// cleanup after ourselves
 				this.removeCSSClassFromEL(file.path, 'has-folder-note');
@@ -111,9 +116,10 @@ export default class FolderNotesPlugin extends Plugin {
 			if (file instanceof TFolder) {
 				return this.handleFolderRename(file, oldPath);
 			} else if (file instanceof TFile) {
+				console.log(file, oldPath); // using prefix method: create a folder note, rename file breaking prefix, warning shown, create new folder note, rename correctly (keeping prefix), warning shown because it stills monitors previous file renamed
 				return this.handleFileRename(file, oldPath);
 			}
-		}));
+		});
 
 		if (!this.app.workspace.layoutReady) {
 			this.app.workspace.onLayoutReady(async () => this.loadFileClasses());
@@ -135,8 +141,8 @@ export default class FolderNotesPlugin extends Plugin {
 			event.target.onclick = null;
 			event.target.click();
 		}
-		const path = folder + '/' + event.target.innerText + '.md';
-
+		const folderNoteName = this.getFolderNoteName(event.target.innerText);
+		const path = folder + '/' + folderNoteName + '.md';
 		if (this.app.vault.getAbstractFileByPath(path)) {
 			return this.openFolderNote(path, event);
 		} else if (event.altKey || Keymap.isModEvent(event) === 'tab') {
@@ -165,8 +171,8 @@ export default class FolderNotesPlugin extends Plugin {
 			event.target.onclick = null;
 			event.target.click();
 		}
-		const path = folder + '/' + event.target.innerText + '.md';
-
+		const folderNoteName = this.getFolderNoteName(event.target.innerText);
+		const path = folder + '/' + folderNoteName + '.md';
 		if (this.app.vault.getAbstractFileByPath(path)) {
 			return this.openFolderNote(path, event);
 		} else if (event.altKey || Keymap.isModEvent(event) === 'tab') {
@@ -183,6 +189,7 @@ export default class FolderNotesPlugin extends Plugin {
 
 	handleFolderRename(file: TFolder, oldPath: string) {
 		const oldFileName = this.getNameFromPathString(oldPath);
+
 		const folder = this.app.vault.getAbstractFileByPath(file.path);
 		if (!folder) return;
 		const excludedFolders = this.settings.excludeFolders.filter(
@@ -206,11 +213,14 @@ export default class FolderNotesPlugin extends Plugin {
 		const excludedFolder = this.getExcludedFolderByPath(oldPath);
 		if (excludedFolder?.disableSync) return;
 
-		const newPath = folder.path + '/' + folder.name + '.md';
+		const oldFolderNoteName = this.getFolderNoteName(oldFileName);
+		const folderNoteName = this.getFolderNoteName(folder.name);
+
+		const newPath = folder.path + '/' + folderNoteName + '.md';
 		if (!(folder instanceof TFolder)) return;
-		const note = this.app.vault.getAbstractFileByPath(oldPath + '/' + oldFileName + '.md');
+		const note = this.app.vault.getAbstractFileByPath(oldPath + '/' + oldFolderNoteName + '.md');
 		if (!note) return;
-		(note as TFile).path = folder.path + '/' + oldFileName + '.md';
+		(note as TFile).path = folder.path + '/' + oldFolderNoteName + '.md';
 		this.app.vault.rename(note, newPath);
 	}
 
@@ -237,30 +247,40 @@ export default class FolderNotesPlugin extends Plugin {
 			if (newExcludedFolder?.disableSync || newExcludedFolder?.disableFolderNote) { return; }
 		}
 
+		if(this.settings.namingMethod == 'index' && file.basename !== this.settings.namingMethodIndex) {
+			this.loadFileClasses(true);
+			new Notice(`Renamed note is no longer the folder note: needs to be named ${this.settings.namingMethodIndex}`);
+			return;
+		} else if(this.settings.namingMethod == 'prefix' && !file.basename.startsWith(this.settings.namingMethodPrefix)) {
+			this.loadFileClasses(true);
+			new Notice(`Renamed note is no longer the folder note: has to start with ${this.settings.namingMethod}`);
+			return;
+		}
+
 		// file matched folder name before rename
 		// file hasnt moved just renamed
 		// Need to rename the folder
-		if (oldFolder && oldFolder.name + '.md' === oldFileName && newFilePath === oldFilePath) {
+		if (oldFolder && this.isFolderNote(oldFileName.slice(0,-3), oldFolder.name) && newFilePath === oldFilePath) {
 			return this.renameFolderOnFileRename(file, oldPath, oldFolder);
 		}
 
 		// the note has been moved somewhere and is no longer a folder note
 		// cleanup css on the folder and note
-		if (oldFolder && oldFolder.name + '.md' === oldFileName && newFilePath !== oldFilePath) {
+		if (oldFolder && this.isFolderNote(oldFileName.slice(0,-3), oldFolder.name) && newFilePath !== oldFilePath) {
 			this.removeCSSClassFromEL(oldFolder.path, 'has-folder-note');
 			this.removeCSSClassFromEL(file.path, 'is-folder-note');
 			this.removeCSSClassFromEL(oldPath, 'is-folder-note');
 		}
 
 		// file has been moved into position where it can be a folder note!
-		if (newFolder && newFolder.name === file.basename) {
+		if (newFolder && this.isFolderNote(file.basename, newFolder.name)) {
 			this.addCSSClassToTitleEL(newFolder.path, 'has-folder-note');
 			this.addCSSClassToTitleEL(file.path, 'is-folder-note', true);
 		}
 	}
 
 	async renameFolderOnFileRename(file: TFile, oldPath: string, oldFolder: TAbstractFile) {
-		const newFolderPath = oldFolder.parent.path + '/' + file.basename;
+		const newFolderPath = oldFolder.parent.path + '/' + this.getFilenameWithoutPrefix(file.basename);
 		if (this.app.vault.getAbstractFileByPath(newFolderPath)) {
 			await this.app.vault.rename(file, oldPath);
 			return new Notice('A folder with the same name already exists');
@@ -269,7 +289,7 @@ export default class FolderNotesPlugin extends Plugin {
 	}
 
 	handleFileCreate(file: TFile) {
-		if (file.basename !== file.parent.name) { return; }
+		if (!this.isFolderNote(file.basename, file.parent.name)) { return; }
 		this.addCSSClassToTitleEL(file.parent.path, 'has-folder-note');
 		this.addCSSClassToTitleEL(file.path, 'is-folder-note', true);
 	}
@@ -332,6 +352,34 @@ export default class FolderNotesPlugin extends Plugin {
 		return this.getFileExplorer().view;
 	}
 
+	getFolderNoteName(folderName: string): string {
+		if(this.settings.namingMethod == "index") {
+			return this.settings.namingMethodIndex;
+		}
+		if(this.settings.namingMethod == "prefix") {
+			return this.settings.namingMethodPrefix + folderName;
+		}
+		return folderName;
+	}
+
+	getFilenameWithoutPrefix(folderNoteName: string): string {
+		if(this.settings.namingMethod == "prefix" && folderNoteName.startsWith(this.settings.namingMethodPrefix)) {
+			return folderNoteName.substring(this.settings.namingMethodPrefix.length);
+		}
+		return folderNoteName;
+	}
+
+	isFolderNote(fileName: string, parentName: string): boolean {
+		if(
+			(this.settings.namingMethod === "foldername" && fileName === parentName)
+			||
+			(this.settings.namingMethod === "prefix" && fileName === this.settings.namingMethodPrefix + parentName)
+			||
+			(this.settings.namingMethod === "index" && fileName === this.settings.namingMethodIndex)
+		) return true;
+		return false;
+	}
+
 	async addCSSClassToTitleEL(path: string, cssClass: string, waitForCreate = false, count = 0) {
 		const fileExplorerItem = this.getEL(path);
 		if (!fileExplorerItem) {
@@ -363,6 +411,17 @@ export default class FolderNotesPlugin extends Plugin {
 		fileExplorerItem.removeClass(cssClass);
 	}
 
+	removeFolderNotesClasses() {
+		document.querySelectorAll('.is-folder-note, .has-folder-note').forEach((item) => {
+			item.removeClasses(['is-folder-note', 'has-folder-note']);
+		});
+	}
+
+	validateFilename(filename: string): boolean {
+		const rgx = /[*\\/:"<>|?]/;
+		return !rgx.test(filename);
+	}
+
 	getEL(path: string): HTMLElement | null {
 		const fileExplorer = this.getFileExplorer();
 		if (!fileExplorer) { return null; }
@@ -375,18 +434,20 @@ export default class FolderNotesPlugin extends Plugin {
 	loadFileClasses(forceReload = false) {
 		if (this.activeFileExplorer === this.getFileExplorer() && !forceReload) { return; }
 		this.activeFileExplorer = this.getFileExplorer();
+		this.removeFolderNotesClasses();
 		this.app.vault.getMarkdownFiles().forEach((file) => {
-			if (file.basename !== file.parent.name) { return; }
-			const excludedFolder = this.getExcludedFolderByPath(file.parent.path);
-			// cleanup after ourselves
-			// Incase settings have changed
-			if (excludedFolder?.disableFolderNote) {
-				this.removeCSSClassFromEL(file.path, 'is-folder-note');
-				this.removeCSSClassFromEL(file.parent.path, 'has-folder-note');
-				return;
+			if(this.isFolderNote(file.basename, file.parent.name)) {
+				const excludedFolder = this.getExcludedFolderByPath(file.parent.path);
+				// cleanup after ourselves
+				// Incase settings have changed
+				if (excludedFolder?.disableFolderNote) {
+					this.removeCSSClassFromEL(file.path, 'is-folder-note');
+					this.removeCSSClassFromEL(file.parent.path, 'has-folder-note');
+					return;
+				}
+				this.addCSSClassToTitleEL(file.parent.path, 'has-folder-note');
+				this.addCSSClassToTitleEL(file.path, 'is-folder-note');
 			}
-			this.addCSSClassToTitleEL(file.parent.path, 'has-folder-note');
-			this.addCSSClassToTitleEL(file.path, 'is-folder-note');
 		});
 	}
 
